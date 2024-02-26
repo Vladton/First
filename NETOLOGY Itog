@@ -1,0 +1,174 @@
+select * from aircrafts ;
+select * from airports ;
+select * from boarding_passes ;
+select * from bookings ;
+select * from flights ;
+select * from flights_v ;
+select * from seats ;
+select * from ticket_flights ;
+select * from tickets ;
+select * from routes ;
+
+
+-- 1. В каких городах больше одного аэропорта?
+
+select city , count(airport_code) --считаем количество аэропортов в каждом городе
+from airports 
+group by city 
+having count(airport_code) > 1 ; -- выбираем города, где аэропортов больше одного
+
+--Москва и Ульяновск
+
+
+--2. В каких аэропортах есть рейсы, выполняемые самолетом с максимальной дальностью перелета?
+
+select departure_airport , departure_airport_name , departure_city -- Выбор кода, названия и города аэропортов ВЫЛЕТА
+from flights_v f1
+where aircraft_code = --отбор рейсов где код самолёта равен коду самолёта с  максимальной дальностью полёта
+(select aircraft_code 
+from aircrafts a
+join 
+(select max(range) 
+from aircrafts) m --выбор максимального значения дальности перелёта
+on a.range = m.max) --выбор кода самолёта с максимальным значением дальности перелёта
+union  ---объединение списка аэропортов ВЫЛЕТА со списком аэропортов ПРИЛЁТА с выбранным самолётом
+select arrival_airport , arrival_airport_name , arrival_city -- Выбор кода, названия и города аэропортов ПРИЛЁТА
+from flights_v f2
+where aircraft_code = --отбор рейсов с кодом самолёта с максимальной дальностью полёта
+(select aircraft_code 
+from aircrafts a
+join 
+(select max(range) 
+from aircrafts) m --выбор максимального значения дальности перелёта
+on a.range = m.max)--выбор кода самолёта с максимальным значением дальности перелёта
+order by departure_airport ;--сортировка по коду аэропорта
+
+--Сочи, Домодедово, Толмачёво, Пермь, Шереметьево, Кольцово, Внуково
+
+
+--3. Вывести 10 рейсов с максимальным временем задержки вылет
+
+select * , (actual_departure - scheduled_departure) as delay -- выбор из таблицы "Рейсы" рейсов, у которых есть данные о фактическом времени вылета и расчёт их задержек
+from flights 
+where actual_departure is not null
+order by delay desc -- сортировка по рассчитанной задержке по убыванию
+limit 10; --выбор первых десяти значений в получившемся списке
+
+
+
+--4. Были ли брони, по которым не были получены посадочные талоны?
+
+select * 
+from bookings b --выбор информации о бронях из таблицы bookings
+join 
+(select distinct t.book_ref -- выбор уникальных номеров брони из таблицы tickets по билетам, для которых не было посадочных талонов в таблице boarding_passes
+from tickets t 
+left join boarding_passes bp on bp.ticket_no = t.ticket_no 
+where bp.boarding_no is null) m on m.book_ref = b.book_ref ;
+
+--Да были, таких броней 91388
+
+
+--5. Найдите количество свободных мест для каждого рейса, 
+-- их % отношение к общему количеству мест в самолете. 
+-- Добавьте столбец с накопительным итогом - 
+-- суммарное накопление количества вывезенных пассажиров из каждого аэропорта на каждый день. 
+-- Т.е. в этом столбце должна отражаться накопительная сумма - 
+-- сколько человек уже вылетело из данного аэропорта на этом или более ранних рейсах в течении дня.
+/*
+  Оконная функция; подзапросы или/и cte
+ */
+select * from ticket_flights
+where flight_id::text like '43290';
+select * from boarding_passes
+where flight_id::text like '43290';
+select * from flights_v 
+where flight_id::text like '43290';
+select * from seats 
+--partition by  "Время вылета" order by "Время вылета"
+
+select *,
+sum("Выдано талонов") over(partition by "Время вылета", "Аэропорт вылета")
+from
+(with Mesta as
+ (select aircraft_code, count(seat_no) as mest
+  from seats
+  group by aircraft_code), --cte с указанием количества мест в каждом типе самолёта
+  Bilety as 
+  (select flight_id, count(ticket_no) as biletof
+   from ticket_flights
+   group by flight_id), --cte с указанием количества проданных билетов на каждый рейс
+    Ludy as 
+    (select flight_id , count(boarding_no) as talonof
+    from boarding_passes
+    group by flight_id) --cte c указанием посадочных талонов на каждый рейс
+select  fv.flight_id , fv.flight_no , Mesta.mest as "Мест в салоне", (Mesta.mest - Bilety.biletof) as "Свободных мест" ,
+(round(((Mesta.mest - Bilety.biletof)::numeric  / (Mesta.mest)::numeric), 2))*100 as "% Свободных" ,
+Bilety.biletof as "Продано билетов", Ludy.talonof "Выдано талонов", 
+fv.actual_departure as "Время вылета" , fv.departure_airport as "Аэропорт вылета" 
+from flights_v fv 
+left join Mesta on Mesta.aircraft_code = fv.aircraft_code
+join Bilety on Bilety.flight_id = fv.flight_id 
+left join Ludy on Ludy.flight_id = fv.flight_id 
+order by fv.actual_departure ,fv.departure_airport) as "Flypeople" 
+;
+
+
+
+
+
+
+
+--6. Найдите процентное соотношение перелетов по типам самолетов от общего количества
+
+with scht as
+(select aircraft_code "Код самолёта" , count(flight_id) "Количество рейсов" 
+from flights f 
+group by aircraft_code
+order by aircraft_code) ---cte вычисление количества рейсов для каждого типа самолёта
+   select "Код самолёта" , a.model , "Количество рейсов",
+   sum("Количество рейсов") over () "Всего рейсов" ,
+  (round( "Количество рейсов"/ (sum("Количество рейсов") over ()) , 2) * 100) "Доля %"
+   from scht
+    join aircrafts a --присоединение инофрмации из таблицы "Самолёты" для вывода названий самолётов
+    on a.aircraft_code = scht."Код самолёта" ;
+
+
+
+--7.Были ли города, в которые можно добраться бизнес - классом дешевле, чем эконом-классом в рамках перелета?
+
+with MinBus as
+ (select flight_id, min(amount) 
+ from ticket_flights 
+ where fare_conditions like 'Business'
+ group by flight_id),--cte с минимальным значением стоимости билета бизнес-класса для каждого рейса
+   MaxEco as (select flight_id, max(amount) 
+   from ticket_flights
+   where fare_conditions like 'Economy'
+   group by flight_id) -- сte с максимальным значением стоимости билета экном-класса для каждого рейса
+select fv.flight_id , fv.arrival_city as "Город прилёта"
+  from flights_v fv
+  join MinBus using (flight_id) 
+  join MaxEco using (flight_id)
+  where min - max < 0; -- выбор рейсов, в которых самый дешёвый билет бизнес-класса дешевле самого дорого билета экном-класса
+
+---Таких городов нет
+
+  
+  --8. Между какими городами нет прямых рейсов?
+
+select city1 as "Город1", city2 as "Город2"
+from 
+(select distinct city as city1 from airports) as "Г1"
+cross join
+(select distinct city as city2 from airports) as "Г2"
+where "Г1".city1 <> "Г2".city2 --все возможные пары городов
+except --из всех возможных пар городов отнимаем существующие пары, связанные рейсами
+select * 
+from
+(select departure_city as "Город1" , arrival_city as "Город2"
+from flights_v
+union
+select arrival_city as "Город1" , departure_city as "Город2"
+from flights_v fv) as sush 
+order by "Город1", "Город2"; --все существующие пары городов, связанные рейсами
